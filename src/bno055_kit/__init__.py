@@ -1,4 +1,4 @@
-"""bno055_kit — boot-time BNO055 I2C IMU recorder for the VISAN Kit.
+"""bno055_kit — boot-time BNO055 I2C IMU recorder.
 
 Design doctrine inherited from VISAN:
   * better no data than wrong data — a session that cannot load a valid

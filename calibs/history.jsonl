@@ -1,2 +1,0 @@
-{"cal_file": "calibrari/cal_20261001_114721.json", "when": "2026-10-01 11:48:03", "bias_linacc_m_s2": 0.1993, "drift_deg_per_min": 12.375, "head_noise_deg": 15.7996, "score": 28.3739}
-{"cal_file": "bno055_cal.json", "when": "2026-10-01 12:33:48", "bias_linacc_m_s2": 0.0576, "drift_deg_per_min": -621.875, "head_noise_deg": 21.1215, "score": 643.0541}

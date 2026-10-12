@@ -58,6 +58,7 @@ class ImuSeries:
     clock_ok: bool = True
     anchor_uncertainty_s: float = 0.0
     session_id: str | None = None
+    n_bad_lines: int = 0
 
 
 @dataclass
@@ -104,11 +105,18 @@ def load_imu_session(session_dir: str | Path) -> ImuSeries:
 
     t_mono, t_wall, gyro_mag, accel_mag = [], [], [], []
     clock_ok = True
+    n_bad = 0
     with open(session_dir / "imu.jsonl", encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                # A truncated/NUL-padded tail (e.g. a copy from a Windows
+                # volume) must not kill analysis of the whole session.
+                n_bad += 1
+                continue
             mono = row["t_mono_ns"] / 1e9
             t_mono.append(mono)
             t_wall.append(row["t_wall_ns"] / 1e9)
@@ -131,6 +139,7 @@ def load_imu_session(session_dir: str | Path) -> ImuSeries:
         clock_ok=clock_ok,
         anchor_uncertainty_s=float(manifest.get("spawn_jitter_s", 0.0)),
         session_id=manifest.get("session_id"),
+        n_bad_lines=n_bad,
     )
 
 
@@ -154,12 +163,17 @@ def load_can_series(
         dec = decode_imu_frame(frame)
         if dec is None:
             continue
-        if dec["kind"] == "gyro" and frame.arbitration_id in gyro_ids:
+        s = dec["signals"]
+        if dec["kind"] == "aspeed" and frame.arbitration_id in gyro_ids:
+            # deg/s here; correlation is scale-invariant (corrcoef), so no
+            # rad/s conversion is needed for the timing estimate.
             gt.append(dec["t_wall_s"])
-            gm.append(float(np.linalg.norm([dec["gx"], dec["gy"], dec["gz"]])))
-        elif dec["kind"] == "accel" and frame.arbitration_id in accel_ids:
+            gm.append(float(np.linalg.norm(
+                [s["AngSpeedX"], s["AngSpeedY"], s["AngSpeedZ"]])))
+        elif dec["kind"] == "acc" and frame.arbitration_id in accel_ids:
             at.append(dec["t_wall_s"])
-            am.append(float(np.linalg.norm([dec["ax"], dec["ay"], dec["az"]])))
+            am.append(float(np.linalg.norm(
+                [s["Acceleration_X"], s["Acceleration_Y"], s["Acceleration_Z"]])))
 
     return CanSeries(
         t_wall_s=np.asarray(times),

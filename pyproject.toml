@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bno055-kit"
 version = "0.1.0"
-description = "BNO055 I2C IMU boot-time recorder and candump time-sync companion for VISAN"
+description = "BNO055 I2C IMU boot-time recorder and candump time-sync companion"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "numpy>=1.26,<2",
@@ -30,6 +30,9 @@ bno055-kit = "bno055_kit.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+bno055_kit = ["analysis/dbc/*.dbc"]
 
 [tool.ruff]
 target-version = "py310"

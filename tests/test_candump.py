@@ -39,23 +39,39 @@ def test_parse_rtr_and_junk():
 
 def test_decode_gyro_scaling():
     frame = parse_line("(2026-10-01 11:10:15.000000)  can0  387#" +
-                      gyro_payload(1.0).hex().upper())
+                      gyro_payload(1.0).hex().upper())  # 1.0 rad/s = 57.2958 deg/s
     dec = decode_imu_frame(frame)
-    assert dec is not None and dec["kind"] == "gyro"
-    # 1.0 rad/s -> 57.2958 deg/s -> 5730 LSB (0.01 deg/s) -> back to rad/s
-    assert abs(dec["gx"] - 1.0) < 1e-3
+    # kind is the DBC message suffix (CAN_ID_IMU_ASPEED -> "aspeed").
+    assert dec is not None and dec["kind"] == "aspeed"
+    assert dec["message"] == "CAN_ID_IMU_ASPEED"
+    # DBC physical units are preserved as-is: deg/s in, deg/s out — no
+    # hidden rad/s conversion (the caller converts explicitly if needed).
+    assert abs(dec["signals"]["AngSpeedX"] - 57.2958) < 0.01
 
 
 def test_decode_accel_scaling():
     payload = accel_payload(9.81)
     frame = parse_line(f"(2026-10-01 11:10:15.000000)  can0  386#{payload.hex().upper()}")
     dec = decode_imu_frame(frame)
-    assert dec is not None and dec["kind"] == "accel"
-    assert abs(dec["ax"] - 9.81) < 0.01
+    assert dec is not None and dec["kind"] == "acc"
+    assert abs(dec["signals"]["Acceleration_X"] - 9.81) < 0.01
 
 
-def test_decode_ignores_other_ids():
-    frame = parse_line("(2026-10-01 11:10:15.000000)  can0  385#0000000000000000")
+def test_decode_yaw_is_unsigned_per_v5_dbc():
+    """Regression: v5 marks Yaw UNSIGNED (0..359.99); the old hand-rolled v3
+    bit decode read it signed and produced negative yaw."""
+    # Yaw (start bit 47, big-endian) occupies bytes 5-6: raw 60000 must
+    # decode to 600.00 deg unsigned (a signed read would give a negative).
+    payload = bytes(5) + (60000).to_bytes(2, "big") + bytes(1)
+    frame = parse_line(f"(2026-10-01 11:10:15.000000)  can0  384#{payload.hex().upper()}")
+    dec = decode_imu_frame(frame)
+    assert dec is not None and dec["kind"] == "att"
+    assert abs(dec["signals"]["Yaw"] - 600.0) < 0.01
+
+
+def test_decode_ignores_non_imu_ids():
+    # 0x7AA is not a CAN_ID_IMU_* message in the DBC -> not decoded.
+    frame = parse_line("(2026-10-01 11:10:15.000000)  can0  7AA#0000000000000000")
     assert decode_imu_frame(frame) is None
 
 

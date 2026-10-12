@@ -110,6 +110,36 @@ class Bno055:
             cal=tuple(s.calibration_status),
         )
 
+    def calibration_status(self) -> tuple[int, int, int, int]:
+        """Raw (sys, gyro, accel, mag) calibration status, each 0..3."""
+        return tuple(self._require().calibration_status)
+
+    def raw_acceleration(self) -> tuple[float, float, float]:
+        """Raw acceleration INCLUDING gravity (m/s^2) — face validation."""
+        v = self._require().acceleration
+        if v is None:
+            return (0.0, 0.0, 0.0)
+        return tuple(float(x) if x is not None else 0.0 for x in v)
+
+    def capture_calibration(self, source: str | None = None,
+                           calibrated_at_utc: str | None = None) -> Calibration:
+        """Read the sensor's current offsets/radii back into a Calibration.
+
+        Used by the on-kit calibration flow after the convergence phases;
+        the result is validated by :meth:`Calibration.from_dict` before it
+        is ever written to disk.
+        """
+        s = self._require()
+        data = {
+            "accel_offset": [int(round(x)) for x in s.offsets_accelerometer],
+            "mag_offset": [int(round(x)) for x in s.offsets_magnetometer],
+            "gyro_offset": [int(round(x)) for x in s.offsets_gyroscope],
+            "accel_radius": int(round(s.radius_accelerometer)),
+            "mag_radius": int(round(s.radius_magnetometer)),
+            "calibrated_at_utc": calibrated_at_utc,
+        }
+        return Calibration.from_dict(data, source=source)
+
     def reset(self) -> None:
         self._require()._reset()
         log.info("sensor soft-reset issued (calibration lost)")

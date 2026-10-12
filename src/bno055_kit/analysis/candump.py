@@ -1,4 +1,4 @@
-"""Parse ``candump -L`` logs into wall-clock-stamped CAN frames.
+"""Parse ``candump -L`` logs into wall-clock-stamped CAN frames (DBC-driven decode).
 
 ``candump -L <iface>`` (what the VISAN flight recorder spawns) writes one
 frame per line::
@@ -121,48 +121,54 @@ def parse_candump(path: str | Path) -> Iterator[CandumpFrame]:
                 yield frame
 
 
-def decode_imu_frame(frame: CandumpFrame) -> dict | None:
-    """Decode the HirrusUAS CAN IMU frames VISAN records (IDs 0x384-0x387).
+# The shipped DBC is the single source of truth for scaling, byte order and
+# signedness (v5 marks Yaw UNSIGNED 0..359.99 — the old hand-rolled v3 bit
+# decode read it signed). Loaded lazily and cached; the .dbc ships with the
+# package (analysis/dbc/).
+DBC_PATH = Path(__file__).resolve().parent / "dbc" / "DBC_HirrusUAS_VISAN_v5.dbc"
 
-    Scaling and byte order follow ``DBC_HirrusUAS_VISAN_v3.dbc`` exactly:
-    all signals are 16-bit Motorola (``@0``, big-endian) with scale 0.01.
-    Only the fields needed for time-domain correlation are decoded:
-      0x384 (900) attitude : Pitch, Roll, Yaw (bytes 0-1, 2-3, 4-5; deg)
-      0x386 (902) accel    : X, Y, Z          (bytes 0-1, 2-3, 4-5; m/s^2)
-      0x387 (903) gyro     : X, Y, Z          (bytes 0-1, 2-3, 4-5; deg/s)
-    Anything else returns None. Gyro is additionally converted to rad/s so it
-    is directly comparable with the BNO055 sample units.
+_DB = None
+_MSG_BY_ID: dict[int, object] = {}
+
+
+def get_database():
+    """Load (once) and return the shipped HirrusUAS DBC database.
+
+    Also caches the IMU message map (frame id -> message) used by
+    :func:`decode_imu_frame`.
     """
-    import math
+    global _DB
+    if _DB is None:
+        import cantools
 
-    def be16s(data: bytes, off: int) -> int:
-        return int.from_bytes(data[off : off + 2], "big", signed=True)
+        _DB = cantools.database.load_file(DBC_PATH)
+        for m in _DB.messages:
+            if m.name.startswith("CAN_ID_IMU_"):
+                _MSG_BY_ID[m.frame_id] = m
+    return _DB
 
-    n = frame.arbitration_id
-    d = frame.data
-    if n == 0x384 and len(d) >= 6:
-        return {
-            "kind": "attitude",
-            "t_wall_s": frame.t_wall_s,
-            "pitch_deg": be16s(d, 0) * 0.01,
-            "roll_deg": be16s(d, 2) * 0.01,
-            "yaw_deg": be16s(d, 4) * 0.01,
-        }
-    if n == 0x386 and len(d) >= 6:
-        return {
-            "kind": "accel",
-            "t_wall_s": frame.t_wall_s,
-            "ax": be16s(d, 0) * 0.01,
-            "ay": be16s(d, 2) * 0.01,
-            "az": be16s(d, 4) * 0.01,
-        }
-    if n == 0x387 and len(d) >= 6:
-        dps2rads = math.pi / 180.0
-        return {
-            "kind": "gyro",
-            "t_wall_s": frame.t_wall_s,
-            "gx": be16s(d, 0) * 0.01 * dps2rads,
-            "gy": be16s(d, 2) * 0.01 * dps2rads,
-            "gz": be16s(d, 4) * 0.01 * dps2rads,
-        }
-    return None
+
+def decode_imu_frame(frame: CandumpFrame) -> dict | None:
+    """Decode a HirrusUAS IMU frame (IDs 0x384-0x387) via the shipped DBC.
+
+    Returns ``{"kind", "message", "t_wall_s", "signals": {name: physical}}``
+    where kind is the DBC message suffix (attitude/accel/aspeed/press/...)
+    and signals carry DBC physical units (deg, deg/s, m/s^2 ...). Unit
+    conversion to the BNO sample units is the caller's explicit choice,
+    recorded in the analysis manifest — never hidden here. Non-IMU ids and
+    undecodable (e.g. truncated) frames return None.
+    """
+    get_database()  # ensure loaded/cached
+    msg = _MSG_BY_ID.get(frame.arbitration_id)
+    if msg is None:
+        return None
+    try:
+        signals = msg.decode(frame.data, decode_choices=False, scaling=True)
+    except Exception:
+        return None  # truncated/undecodable payload
+    return {
+        "kind": msg.name.removeprefix("CAN_ID_IMU_").lower(),
+        "message": msg.name,
+        "t_wall_s": frame.t_wall_s,
+        "signals": dict(signals),
+    }

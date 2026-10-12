@@ -9,10 +9,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 REQUIRED_KEYS = ("accel_offset", "mag_offset", "gyro_offset", "accel_radius", "mag_radius")
+
+# The permanent known-good calibration shipped with the Kit. Unlike the
+# active calibration it is frozen (root-owned, mode 0444 on the Kit) and is
+# never written by the calibration flow — it is what the fallback mechanism
+# restores the active calibration from.
+FALLBACK_NAME = "factory_fallback.json"
+
+
+def fallback_path(cal_file: str | Path) -> Path:
+    """Location of the factory fallback next to an active calibration file."""
+    return Path(cal_file).parent / FALLBACK_NAME
 
 INT16_RANGE = range(-32768, 32768)  # BNO055 offset registers are signed 16-bit
 # The adafruit driver packs radii as signed '<h' — values above 32767 pass
@@ -109,3 +121,73 @@ def load_calibration(path: str | Path) -> Calibration:
     if not isinstance(data, dict):
         raise CalibrationError(f"calibration file is not a JSON object: {path}")
     return Calibration.from_dict(data, source=str(path), sha256=file_sha256(path))
+
+
+def save_calibration(cal: Calibration, path: str | Path) -> str:
+    """Validate then atomically write a calibration file; return its sha256.
+
+    Written via a temp file + rename so a crash mid-write can never leave a
+    truncated active.json for the daemon to choke on at boot.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A file cannot meaningfully contain its own hash — drop any stale one
+    # (e.g. a loaded calibration promoted by ``best``) before writing.
+    payload_dict = cal.to_dict()
+    payload_dict.pop("sha256", None)
+    payload = json.dumps(payload_dict, indent=2) + "\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(path)
+    return file_sha256(path)
+
+
+def append_history(record: dict, path: str | Path) -> None:
+    """Append one bench record to the JSONL history (legacy-compatible)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def read_history(path: str | Path) -> list[dict]:
+    """Read the JSONL history; tolerate a missing file and blank lines."""
+    path = Path(path)
+    if not path.is_file():
+        return []
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            records.append(json.loads(line))
+    return records
+
+
+def pick_best(records: list[dict]) -> dict | None:
+    """Lowest-score record whose cal_file still exists (legacy ``best``)."""
+    usable = [r for r in records
+              if r.get("cal_file") and r.get("score") is not None
+              and os.path.exists(r["cal_file"])]
+    if not usable:
+        return None
+    return min(usable, key=lambda r: r["score"])
+
+
+def rank_and_compare(records: list[dict],
+                     factory_score: float | None) -> tuple[dict | None, bool]:
+    """Rank on-Kit sessions and compare the winner with the factory fallback.
+
+    Returns ``(winner, promote)``: the lowest-score record whose cal_file
+    still exists, and whether it should be promoted over the factory
+    calibration. Promotion requires a winner that *strictly* beats the
+    factory score — a tie keeps the frozen known-good cal. A ``None``
+    factory score (e.g. the fallback failed to bench) is treated as "no
+    baseline": the winner is promoted rather than losing to a missing
+    reference.
+    """
+    winner = pick_best(records)
+    if winner is None:
+        return None, False
+    if factory_score is None:
+        return winner, True
+    return winner, winner["score"] < factory_score

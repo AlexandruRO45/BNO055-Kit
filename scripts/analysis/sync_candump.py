@@ -9,7 +9,7 @@ Usage:
 Writes a sync manifest (default: <session_dir>/sync.json) describing the
 constant clock offset between the IMU session timeline and the candump
 wall-clock timeline, plus the residual jitter — the companion anchor to the
-VISAN flight recorder's sync.json for offline correlation.
+flight recorder's sync.json for offline correlation.
 
 Exit codes: 0 ok, 1 analysis failed, 2 bad arguments.
 """
@@ -17,8 +17,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+# Re-exec under the app venv when launched with any other interpreter —
+# `sudo python3 ...` on the Kit uses the system python, which lacks numpy.
+# On an analysis host the venv path does not exist and this is a no-op.
+_APP_VENV = Path("/opt/bno055/.venv")
+if (_APP_VENV / "bin/python").is_file() \
+        and Path(sys.prefix).resolve() != _APP_VENV.resolve():
+    os.execv(str(_APP_VENV / "bin/python"),
+             [str(_APP_VENV / "bin/python"), *sys.argv])
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 

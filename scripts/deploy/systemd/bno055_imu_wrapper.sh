@@ -5,7 +5,6 @@
 # Thin exec-wrapper so the unit stays declarative: config path and log
 # dir come from environment with defaults, and `exec` replaces the shell
 # with the daemon so systemd signals land directly on the Python process
-# (same pattern as the VISAN tegrastats wrapper).
 set -e
 
 APP_ROOT="${BNO055_KIT_ROOT:-/opt/bno055}"
