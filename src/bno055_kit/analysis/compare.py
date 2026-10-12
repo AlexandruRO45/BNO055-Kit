@@ -19,8 +19,12 @@ transform. The transforms are opt-in conveniences, recorded in the manifest:
 
 ``accel_convention``
     ``"raw"`` (default) compares BNO lin_acc (gravity removed) as-is.
-    ``"add_gravity"`` adds [0, 0, +9.80665] m/s^2 to lin_acc so it lines up
-    with the CAN accelerometer, which includes gravity.
+    ``"reconstruct_gravity"`` rebuilds the full specific force the CAN
+    accelerometer sees by adding the gravity reaction rotated into the BNO
+    body frame via the sample quaternion: ``lin_acc - R(q)@[0,0,g]``. This is
+    the physically correct way to line BNO lin_acc up with a CAN accelerometer
+    that reports gravity, and it collapses the Z mean delta from ~20 m/s^2
+    (raw) to the true sensor-agreement residual.
 
 ``gyro_convention``
     ``"none"`` (default) compares as-is. ``"negate"`` flips all three axes;
@@ -49,7 +53,7 @@ ASPEED_MAP = {"AngSpeedX": 0, "AngSpeedY": 1, "AngSpeedZ": 2}
 EULER_NAMES = ("head", "roll", "pitch")
 CONVENTIONS = {
     "euler": ("none", "ned_to_nwu"),
-    "accel": ("raw", "add_gravity"),
+    "accel": ("raw", "reconstruct_gravity"),
     "gyro": ("none", "negate", "rot_x180"),
 }
 
@@ -75,9 +79,14 @@ class SignalSeries:
 
 @dataclass
 class ImuSignalSeries:
-    """All BNO sample series, keyed by component name (head/roll/pitch, x/y/z)."""
+    """All BNO sample series, keyed by component name (head/roll/pitch, x/y/z).
+
+    ``quat`` is the (N, 4) wxyz attitude quaternion, kept so the accel
+    convention can rotate world gravity into the body frame on demand.
+    """
 
     series: dict[str, SignalSeries]
+    quat: np.ndarray | None = None
     session_id: str | None = None
     n_bad_lines: int = 0
 
@@ -146,6 +155,19 @@ def _wrap_deg(x: np.ndarray) -> np.ndarray:
     return (x + 180.0) % 360.0 - 180.0
 
 
+def _gravity_body(quat: np.ndarray) -> np.ndarray:
+    """Gravity reaction R(q) @ [0, 0, g] in each sample's body frame (N, 3).
+
+    A CAN accelerometer reports specific force (linear accel minus gravity
+    reaction); BNO lin_acc has gravity removed. Reconstructing the full
+    specific force is ``lin_acc - R(q) @ [0, 0, g]``.
+    """
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    col3 = np.column_stack([2 * (x * z + w * y), 2 * (y * z - w * x),
+                           1 - 2 * (x * x + y * y)])  # 3rd column of R
+    return col3 * GRAVITY_Z
+
+
 def load_imu_signals(session_dir: str | Path) -> ImuSignalSeries:
     """Read ``session.json`` + ``imu.jsonl`` into per-component series (wall clock)."""
     session_dir = Path(session_dir)
@@ -153,7 +175,7 @@ def load_imu_signals(session_dir: str | Path) -> ImuSignalSeries:
     start_wall = int(manifest["start_wall_ns"])
     start_mono = int(manifest["start_mono_ns"])
 
-    t_list, head, roll, pitch, acc, gyro = [], [], [], [], [], []
+    t_list, quat, head, roll, pitch, acc, gyro = [], [], [], [], [], [], []
     n_bad = 0
     with open(session_dir / "imu.jsonl", encoding="utf-8") as f:
         for line in f:
@@ -166,6 +188,7 @@ def load_imu_signals(session_dir: str | Path) -> ImuSignalSeries:
                 continue
             # Same projection as sync: monotonic timeline onto the wall clock.
             t_list.append(start_wall / 1e9 + (row["t_mono_ns"] / 1e9 - start_mono / 1e9))
+            quat.append([row["qw"], row["qx"], row["qy"], row["qz"]])
             head.append(row["head"])
             roll.append(row["roll"])
             pitch.append(row["pitch"])
@@ -176,6 +199,7 @@ def load_imu_signals(session_dir: str | Path) -> ImuSignalSeries:
         raise ValueError(f"no samples in {session_dir / 'imu.jsonl'}")
 
     t = np.asarray(t_list)
+    quat_a = np.asarray(quat, dtype=float)
     eu = np.stack([np.asarray(head, float), np.asarray(roll, float),
                    np.asarray(pitch, float)])
     acc_a = np.asarray(acc, dtype=float)
@@ -188,7 +212,7 @@ def load_imu_signals(session_dir: str | Path) -> ImuSignalSeries:
         series[f"acc_{name}"] = SignalSeries(f"acc_{name}", "m/s^2", t, acc_a[:, i])
         series[f"gyro_{name}"] = SignalSeries(f"gyro_{name}", "deg/s", t,
                                              gyro_a[:, i] * RAD2DEG)
-    return ImuSignalSeries(series=series,
+    return ImuSignalSeries(series=series, quat=quat_a,
                            session_id=manifest.get("session_id"),
                            n_bad_lines=n_bad)
 
@@ -251,8 +275,25 @@ def compare(
         ("aspeed", ASPEED_MAP, ("x", "y", "z"), "gyro_", gyro_convention),
     ]
 
+    # Every signal shares the IMU sample timeline, so a single per-sample mask
+    # selects the aligned window once; each signal then contributes one value
+    # per kept sample. Rows are grouped by timestamp (one line per sample).
+    t_all = next(iter(imu.series.values())).t_s + offset_s
+    base = t_all[0]
+    lo, hi = (base, t_all[-1]) if window_s is None else (base + window_s[0],
+                                                        base + window_s[1])
+    win = (t_all >= lo) & (t_all <= hi)
+    if not win.any():
+        notes.append("no samples inside window")
+    # Gravity reaction (body frame) for the accel reconstruct convention.
+    grav = (_gravity_body(imu.quat) if imu.quat is not None
+            and accel_convention == "reconstruct_gravity" else None)
+
     summaries: list[SignalSummary] = []
-    rows: list[dict] = []
+    # A sample is kept only where EVERY compared signal is finite, so each
+    # grouped row carries a complete, aligned set of values.
+    ok = np.ones(int(win.sum()), dtype=bool)
+    prepared: list[tuple[str, str, np.ndarray, np.ndarray, np.ndarray]] = []
     for kind, cmap, names, prefix, conv in groups:
         can_kind = can.kind_for((kind,))
         if can_kind is None:
@@ -264,45 +305,42 @@ def compare(
                 continue
             imu_s = imu.series[imu_key]
             can_s = can.by_kind[can_kind][can_name]
-            t_imu = imu_s.t_s + offset_s
-            # window_s is relative to the start of the (offset-corrected) IMU
-            # timeline, so it reads the same regardless of the clock offset.
-            base = t_imu[0]
-            lo, hi = (base, t_imu[-1]) if window_s is None else (base + window_s[0],
-                                                               base + window_s[1])
-            mask = (t_imu >= lo) & (t_imu <= hi)
-            if not mask.any():
-                notes.append(f"{imu_key}: no samples inside window")
-                continue
-            can_v = np.interp(t_imu[mask], can_s.t_s, can_s.values,
+            can_v = np.interp(t_all[win], can_s.t_s, can_s.values,
                              left=np.nan, right=np.nan)
-            imu_v = imu_s.values[mask]
-            if kind == "acc" and conv == "add_gravity" and idx == 2:
-                imu_v = imu_v + GRAVITY_Z
+            imu_v = imu_s.values[win]
+            if kind == "acc" and conv == "reconstruct_gravity" and grav is not None:
+                imu_v = imu_v - grav[win][:, idx]
             if kind == "att" and conv == "ned_to_nwu" and can_name == "Yaw":
                 can_v = _wrap_deg(can_v - 90.0)
             if kind == "aspeed":
                 imu_v = imu_v * GYRO_SIGNS[conv][idx]
-            good = np.isfinite(can_v) & np.isfinite(imu_v)
-            if good.sum() < 2:
-                notes.append(f"{imu_key}: too few aligned points")
-                continue
-            tv, iv, cv = t_imu[mask][good], imu_v[good], can_v[good]
             # Attitude is angular: the shortest signed arc, so a BNO heading
             # of 359.9 vs a CAN yaw of 0.1 reads as -0.2, not -359.8.
-            delta = _wrap_deg(iv - cv) if kind == "att" else iv - cv
-            rows.extend(
-                {"t": float(t), "signal": f"{imu_key}~{can_name}",
-                 "bno": float(i), "can": float(c), "delta": float(d)}
-                for t, i, c, d in zip(tv, iv, cv, delta, strict=True)
-            )
-            summaries.append(SignalSummary(
-                name=f"{imu_key}~{can_name}", unit=imu_s.unit, bno_key=imu_key,
-                can_signal=can_name, n=int(good.sum()),
-                rmse=float(np.sqrt(np.mean(delta ** 2))),
-                max_abs_delta=float(np.max(np.abs(delta))),
-                mean_delta=float(np.mean(delta)),
-            ))
+            delta = _wrap_deg(imu_v - can_v) if kind == "att" else imu_v - can_v
+            prepared.append((f"{imu_key}~{can_name}", imu_s.unit, imu_v, can_v, delta))
+            ok &= np.isfinite(can_v) & np.isfinite(imu_v)
+
+    if ok.sum() < 2:
+        notes.append("too few fully-aligned samples")
+    t_kept = t_all[win][ok]
+    names_ordered = [n for n, *_ in prepared]
+    cols = [(iv[ok].tolist(), cv[ok].tolist(), dl[ok].tolist())
+            for _n, _u, iv, cv, dl in prepared]
+    for n, unit, _iv, _cv, dl in prepared:
+        d = dl[ok]
+        imu_key, can_name = n.split("~")
+        summaries.append(SignalSummary(
+            name=n, unit=unit, bno_key=imu_key, can_signal=can_name,
+            n=int(d.size), rmse=float(np.sqrt(np.mean(d ** 2))),
+            max_abs_delta=float(np.max(np.abs(d))), mean_delta=float(np.mean(d))))
+
+    # Group by timestamp: one row per kept sample, carrying every signal's
+    # bno/can/delta at that instant (iterate the timeline, not the signals).
+    rows: list[dict] = []
+    for k, t in enumerate(t_kept):
+        signals = {n: {"bno": c[0][k], "can": c[1][k], "delta": c[2][k]}
+                   for n, c in zip(names_ordered, cols, strict=True)}
+        rows.append({"t": float(t), "signals": signals})
 
     return CompareResult(
         offset_s=offset_s, method=method, confidence=confidence,

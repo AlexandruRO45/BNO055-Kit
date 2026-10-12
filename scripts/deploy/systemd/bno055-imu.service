@@ -36,10 +36,12 @@ StateDirectoryMode=0755
 LogsDirectory=bno055
 LogsDirectoryMode=0755
 
-# The visan user is created by the VISAN deb; the kit reuses it and needs
-# the i2c group for /dev/i2c-7 (gpio not required — no interrupt line used).
-# The gpio group covers the sysfs/gpiochip nodes blinka's Jetson backend
-# probes when it imports board (99-gpio.rules, installed by install_kit.sh).
+# The service user/group (User=/Group= above) are templated by install_kit.sh
+# (--user/--group; default visan). On a VISAN airframe that is the deb's user;
+# on another host it is whatever the operator chose. The daemon needs the i2c
+# group for /dev/i2c-7 (gpio not required — no interrupt line used). The gpio
+# group covers the sysfs/gpiochip nodes blinka's Jetson backend probes when it
+# imports board (99-gpio.rules, installed by install_kit.sh).
 SupplementaryGroups=i2c gpio
 
 Environment="PATH=/opt/bno055/.venv/bin:/usr/local/bin:/usr/bin:/bin"

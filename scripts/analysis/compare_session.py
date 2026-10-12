@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""compare_session.py — sync + side-by-side compare a BNO session vs a VISAN capture.
+"""compare_session.py — sync + side-by-side compare a BNO session vs a CAN capture.
+
+The capture is any candump -L log carrying the IMU frames; it need not come
+from a VISAN airframe — point it at any host's capture and it works.
 
 Usage:
-    compare_session.py <bno_session_dir> <visan_session_dir>
+    compare_session.py <bno_session_dir> <capture_dir>
                        [--out-dir DIR] [--euler-convention none|ned_to_nwu]
-                       [--accel-convention raw|add_gravity]
-                       [--gyro-convention none|negate]
+                       [--accel-convention raw|reconstruct_gravity]
+                       [--gyro-convention none|negate|rot_x180]
                        [--method auto|correlation|anchor] [--fs 20] [--max-lag 5]
                        [--window LO:HI]  # seconds, relative to overlap start
 
 Runs the clock sync (sync_candump), then compares every BNO signal against
 the matching DBC-decoded CAN signal at each aligned timestamp. Writes the
-per-session analysis bundle to <visan_session>/analysis/ by default:
+per-session analysis bundle to <capture_dir>/analysis/ by default:
 
     sync.json            clock offset + jitter (same schema as sync_candump)
-    compare.jsonl        one row per (sample, signal): t, signal, bno, can, delta
+    compare.jsonl        one row per sample: t + {signal: {bno, can, delta}}
     compare_summary.json per-signal stats + the conventions/offsets used
 
 Exit codes: 0 ok, 1 analysis failed, 2 bad arguments.
@@ -54,16 +57,17 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="compare_session",
                                 description=__doc__.splitlines()[0])
     p.add_argument("bno_dir", help="BNO055 session dir (session.json + imu.jsonl)")
-    p.add_argument("visan_dir", help="VISAN session dir (holds can.candump)")
+    p.add_argument("capture_dir", help="CAN capture session dir (holds can.candump)")
     p.add_argument("--out-dir", default=None,
-                   help="bundle dir (default <visan_dir>/analysis)")
+                   help="bundle dir (default <capture_dir>/analysis)")
     p.add_argument("--candump", default=None,
-                   help="candump log (default <visan_dir>/can.candump)")
+                   help="candump log (default <capture_dir>/can.candump)")
     p.add_argument("--method", choices=("auto", "correlation", "anchor"), default="auto")
     p.add_argument("--fs", type=float, default=20.0)
     p.add_argument("--max-lag", type=float, default=5.0)
     p.add_argument("--euler-convention", choices=("none", "ned_to_nwu"), default="none")
-    p.add_argument("--accel-convention", choices=("raw", "add_gravity"), default="raw")
+    p.add_argument("--accel-convention", choices=("raw", "reconstruct_gravity"),
+                   default="raw")
     p.add_argument("--gyro-convention", choices=("none", "negate", "rot_x180"),
                    default="none")
     p.add_argument("--window", default=None,
@@ -71,16 +75,16 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     bno_dir = Path(args.bno_dir)
-    visan_dir = Path(args.visan_dir)
+    capture_dir = Path(args.capture_dir)
     if not bno_dir.is_dir():
         print(f"[FAIL] not a directory: {bno_dir}", file=sys.stderr)
         return 2
-    candump = Path(args.candump) if args.candump else visan_dir / "can.candump"
+    candump = Path(args.candump) if args.candump else capture_dir / "can.candump"
     if not candump.is_file():
         print(f"[FAIL] not a file: {candump}", file=sys.stderr)
         return 2
 
-    out_dir = Path(args.out_dir) if args.out_dir else visan_dir / "analysis"
+    out_dir = Path(args.out_dir) if args.out_dir else capture_dir / "analysis"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     window = None
@@ -134,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = result.to_summary_dict()
     summary["imu_session"] = str(bno_dir)
-    summary["visan_session"] = str(visan_dir)
+    summary["capture_session"] = str(capture_dir)
     summary["candump_log"] = str(candump)
     summary["can_frames"] = can.n_frames
     summary["imu_n_bad_lines"] = imu.n_bad_lines

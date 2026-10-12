@@ -69,16 +69,40 @@ def test_compare_recovers_zero_delta_when_frames_match(imu_session, tmp_path):
     can = load_can_signals(capture)
     _result, rows = compare(imu, can, offset)
 
+    # Rows are grouped by timestamp: each line carries every signal's
+    # bno/can/delta at that instant. Collect per-signal delta series.
     by: dict[str, list] = {}
     for r in rows:
-        by.setdefault(r["signal"], []).append(r)
+        for sig, v in r["signals"].items():
+            by.setdefault(sig, []).append(v["delta"])
 
     for sig in ("head~Yaw", "roll~Roll", "pitch~Pitch",
                 "gyro_x~AngSpeedX", "gyro_y~AngSpeedY", "gyro_z~AngSpeedZ",
                 "acc_x~Acceleration_X", "acc_z~Acceleration_Z"):
         assert by[sig], f"missing {sig}"
-        rmse = float(np.sqrt(np.mean([r["delta"] ** 2 for r in by[sig]])))
+        rmse = float(np.sqrt(np.mean(np.asarray(by[sig]) ** 2)))
         assert rmse < 0.05, f"{sig} rmse {rmse}"
+
+
+def test_rows_grouped_by_timestamp(imu_session, tmp_path):
+    """One line per sample, carrying all signals at that instant."""
+    manifest = json.loads((imu_session / "session.json").read_text(encoding="utf-8"))
+    start_wall = manifest["start_wall_ns"] / 1e9
+    capture = tmp_path / "can.candump"
+    with open(capture, "w", encoding="utf-8") as f:
+        for i in range(1000):
+            t = start_wall + i * 0.01
+            f.write(f"({t:.6f})  can0  384#"
+                    + _encode("att", {"Pitch": 0.0, "Roll": 0.0, "Yaw": 0.0}) + "\n")
+    imu = load_imu_signals(imu_session)
+    can = load_can_signals(capture)
+    _result, rows = compare(imu, can, 0.0)
+    # Each row is one timestamp with all three attitude signals together.
+    assert rows, "no rows"
+    assert set(rows[0]["signals"]) >= {"head~Yaw", "roll~Roll", "pitch~Pitch"}
+    # Timestamps strictly ascending (iterate the timeline, not the signals).
+    ts = [r["t"] for r in rows]
+    assert ts == sorted(ts)
 
 
 def test_compare_window_limits_samples(imu_session, tmp_path):
@@ -93,5 +117,5 @@ def test_compare_window_limits_samples(imu_session, tmp_path):
     imu = load_imu_signals(imu_session)
     can = load_can_signals(capture)
     _result, rows = compare(imu, can, 0.0, window_s=(0.0, 1.0))
-    # 1 s window at 100 Hz => ~100 samples per signal, not the full 1000.
+    # 1 s window at 100 Hz => ~100 grouped samples, not the full 1000.
     assert 50 < len(rows) < 400
