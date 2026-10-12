@@ -1,6 +1,6 @@
 """Session recording: JSONL sample log + session manifest with clock anchors.
 
-Layout per session (mirrors the VISAN flight-recorder session-dir pattern::
+Layout per session (mirrors the flight-recorder session-dir pattern::
 
     <log_dir>/<session_id>/
         imu.jsonl      — one JSON object per sample, flushed per line
@@ -8,7 +8,7 @@ Layout per session (mirrors the VISAN flight-recorder session-dir pattern::
 
 The manifest carries BOTH ``start_wall_ns`` (CLOCK_REALTIME) and
 ``start_mono_ns`` (CLOCK_MONOTONIC), sampled as a tight pair around session
-start — the same anchor-pair reasoning as the VISAN candump recorder's
+start — the same anchor-pair reasoning as a candump recorder's
 ``sync.json``: the pair lets offline analysis place the monotonic timeline of
 this session onto the wall-clock timeline of a candump capture, and detect
 any NTP step that happened during the session (per-sample ``clock_ok``).

@@ -1,12 +1,12 @@
 """bno055_kit — boot-time BNO055 I2C IMU recorder.
 
-Design doctrine inherited from VISAN:
+Design doctrine:
   * better no data than wrong data — a session that cannot load a valid
     calibration refuses to record instead of recording an uncalibrated stream;
   * every sample carries BOTH a CLOCK_MONOTONIC and a CLOCK_REALTIME
     nanosecond stamp, so offline analysis can detect NTP steps (monotonic
     cannot jump; realtime can) — same reasoning as the monotonic anchor in
-    the VISAN candump recorder;
+    a candump flight-recorder capture;
   * math/alignment uses monotonic ns; wall clock is archival only.
 """
 

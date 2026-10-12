@@ -31,7 +31,7 @@ class Sample:
 
     @property
     def confidence(self) -> float:
-        """Mean calibration status normalised to [0, 1] (VISAN ``c``)."""
+        """Mean calibration status normalised to [0, 1] (the ``c`` field)."""
         return sum(self.cal) / 12.0
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """compare_session.py — sync + side-by-side compare a BNO session vs a CAN capture.
 
-The capture is any candump -L log carrying the IMU frames; it need not come
-from a VISAN airframe — point it at any host's capture and it works.
+The capture is any candump -L log carrying the IMU frames — point it at any
+host's capture and it works.
 
 The two sensors sit in different body frames, so the SAME samples are written
 under a per-preset subfolder. Pick one preset (default ``raw``) or pass

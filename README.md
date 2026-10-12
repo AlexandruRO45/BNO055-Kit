@@ -51,6 +51,7 @@ kit/
     health_check.py                one-shot Kit health report
   scripts/analysis/
     sync_candump.py                align a session with a candump capture
+    compare_session.py             sync + per-preset side-by-side BNO/CAN compare
   configs/bno055_imu.yaml          daemon config (installed to /etc/bno055)
   calibs/                          active seed + frozen factory fallback
                                    (cal_<ts>.json sessions + history.jsonl are
@@ -69,9 +70,12 @@ kit/
 | `/etc/bno055/bno055_imu.yaml` | daemon config |
 | `/run/bno055` | runtime dir (`RuntimeDirectory`) |
 
-The unit runs as `visan:visan` with `SupplementaryGroups=i2c` and is
-**independent of `visan.service`** — the IMU timeline must cover the whole
-boot, not only VISAN's lifetime.
+The unit runs as the **service user/group you choose at install time** (there
+is no built-in default: `install_kit.sh` takes it from `--user`/`--group`,
+else auto-detects the sudo caller via `SUDO_USER`, else prompts you to type
+it) with `SupplementaryGroups=i2c`, and is **independent of any other
+flight-stack service** — the IMU timeline must cover the whole boot, not only
+their lifetime.
 
 ## Install (on the Kit)
 
@@ -82,10 +86,15 @@ available:
 sudo apt-get install rsync
 ```
 
+The service user/group are **mandatory and have no default**: pass them
+explicitly with `--user`/`--group`, or omit the flags and the installer takes
+them from the sudo caller (`SUDO_USER`) automatically — and if it cannot
+auto-detect them, it prompts you to type them in real time.
+
 ```bash
-sudo bash scripts/deploy/install_kit.sh            # dry-run, shows every step
-sudo bash scripts/deploy/install_kit.sh --confirm  # apply
-sudo systemctl start bno055-imu.service            # or just reboot
+sudo bash scripts/deploy/install_kit.sh --user $USER            # dry-run, shows every step
+sudo bash scripts/deploy/install_kit.sh --user $USER --confirm  # apply
+sudo systemctl start bno055-imu.service                         # or just reboot
 ```
 
 Install **enables** the unit for boot but does not
@@ -175,14 +184,14 @@ history is directly comparable. Exposed on the Kit as
 ```bash
 python3 scripts/analysis/sync_candump.py \
     /var/log/bno055/bno_20261001T111015Z \
-    /mnt/nvme-app/visan_flight_sessions/<session>/can.candump \
+    /mnt/nvme-app/flight_sessions/<session>/can.candump \
     --out sync.json
 ```
 
 Two methods, tried in trust order (`--method auto` default):
 
 1. **correlation** (preferred): decodes the HirrusUAS accel/gyro frames
-   (IDs 0x386/0x387, DBC v3 scaling) from the capture, resamples both
+   (IDs 0x386/0x387, DBC v5 scaling) from the capture, resamples both
    magnitude series onto a common grid, and cross-correlates to recover the
    true pipeline offset — no shared clock assumed.
 2. **anchor** (fallback): takes the residual from each sample's real wall
@@ -197,6 +206,43 @@ Timestamp contract: `candump -L` prints **local** wall-clock time; the
 parser interprets it as local time (the Kit and the analysis host must
 share a timezone, or use `candump -t a` epoch captures, which are also
 accepted).
+
+## Watch a live session (`imu.jsonl`)
+
+Every recorded sample is one JSON object per line in `imu.jsonl`. To watch the
+recorder live, pretty-print the stream with `jq` — the fields are the
+quaternion (`qw`/`qx`/`qy`/`qz`), the fused orientation (head / roll / pitch,
+degrees), the linear acceleration and gyroscope vectors (gravity-stripped
+acceleration and angular rate, m/s^2 and rad/s), the per-subsystem calibration
+status vector `cal` (accel / gyro / mag / system), the normalised calibration
+confidence `c` (mean of `cal`, 0..1), and the `clock_ok` flag (false once an
+NTP step was detected mid-session):
+
+```bash
+tail -f /var/log/bno055/<session>/imu.jsonl | jq -r --unbuffered '
+  "\u001b[H\u001b[J" +
+  "QUATERNION\n" +
+  "  qw: \(.qw)\n" +
+  "  qx: \(.qx)\n" +
+  "  qy: \(.qy)\n" +
+  "  qz: \(.qz)\n" +
+  "\n" +
+  "ORIENTATION\n" +
+  "  head:  \(.head)\n" +
+  "  roll:  \(.roll)\n" +
+  "  pitch: \(.pitch)\n" +
+  "\n" +
+  "LINEAR ACCELERATION: \(.lin_acc | join(", "))\n" +
+  "GYROSCOPE:          \(.gyro | join(", "))\n" +
+  "CALIBRATION: \(.cal | join(", "))\n" +
+  "CONFIDENCE:  \(.c)\n" +
+  "CLOCK OK:    \(.clock_ok)\n"
+'
+```
+
+`\u001b[H\u001b[J` is the ANSI home-and-clear sequence, so each sample redraws
+in place like a live dashboard. `--unbuffered` makes `jq` flush every object
+as it arrives instead of batching.
 
 ## Develop / verify (host, no hardware)
 

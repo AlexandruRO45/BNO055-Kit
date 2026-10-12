@@ -1,6 +1,6 @@
 """Parse ``candump -L`` logs into wall-clock-stamped CAN frames (DBC-driven decode).
 
-``candump -L <iface>`` (what the VISAN flight recorder spawns) writes one
+``candump -L <iface>`` (what a candump flight recorder spawns) writes one
 frame per line::
 
     (2026-10-01 11:10:15.123456)  can0  384#1122334455667788
@@ -125,7 +125,7 @@ def parse_candump(path: str | Path) -> Iterator[CandumpFrame]:
 # signedness (v5 marks Yaw UNSIGNED 0..359.99 — the old hand-rolled v3 bit
 # decode read it signed). Loaded lazily and cached; the .dbc ships with the
 # package (analysis/dbc/).
-DBC_PATH = Path(__file__).resolve().parent / "dbc" / "DBC_HirrusUAS_VISAN_v5.dbc"
+DBC_PATH = Path(__file__).resolve().parent / "dbc" / "DBC_HirrusUAS_v5.dbc"
 
 _DB = None
 _MSG_BY_ID: dict[int, object] = {}

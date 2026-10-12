@@ -1,6 +1,6 @@
 """Clock helpers: paired monotonic/realtime stamps and NTP-step (slew) detection.
 
-VISAN's sub-source envelope contract stamps samples with integer
+The flight-stack sub-source envelope contract stamps samples with integer
 nanoseconds: ``sensor_timestamp_ns`` / ``published_at_mono_ns`` from
 CLOCK_MONOTONIC (canonical for fusion math, invariant to NTP steps) and
 ``sensor_timestamp_wall_ns`` from CLOCK_REALTIME (archival only). This module

@@ -1,17 +1,17 @@
 [Unit]
-# BNO055 I2C IMU boot-time recorder — independent companion to visan.service.
+# BNO055 I2C IMU boot-time recorder — an independent, standalone boot unit.
 #
 # Runs headless from boot: loads the shipped calibration from
 # /var/lib/bno055/active.json and records NDOF samples to
 # /var/log/bno055/<session>/imu.jsonl, each sample stamped with a
 # (CLOCK_REALTIME, CLOCK_MONOTONIC) nanosecond pair so offline analysis
-# (scripts/analysis/sync_candump.py) can align this timeline with the VISAN
-# candump capture, compensating for pipeline jitter.
+# (scripts/analysis/sync_candump.py) can align this timeline with a candump
+# capture, compensating for pipeline jitter.
 #
-# Lifecycle (deliberately INDEPENDENT of visan.service — the IMU timeline
-# must cover the whole boot, not only VISAN's lifetime):
+# Lifecycle (deliberately INDEPENDENT of any other flight-stack service —
+# the IMU timeline must cover the whole boot, not only their lifetime):
 #   WantedBy=multi-user.target   starts at boot on its own, no ordering
-#                                coupling to visan.service
+#                                coupling to other units
 #
 # Fails closed: a missing/invalid calibration exits EX_CONFIG (78) and
 # systemd keeps the unit failed (RestartPreventExitStatus) — better no data
@@ -25,8 +25,9 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=visan
-Group=visan
+# Placeholders: install_kit.sh substitutes the resolved --user/--group here.
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
 
 # systemd-managed dirs (created with correct ownership at unit start):
 #   /var/lib/bno055  calibration state (StateDirectory)
@@ -37,8 +38,8 @@ LogsDirectory=bno055
 LogsDirectoryMode=0755
 
 # The service user/group (User=/Group= above) are templated by install_kit.sh
-# (--user/--group; default visan). On a VISAN airframe that is the deb's user;
-# on another host it is whatever the operator chose. The daemon needs the i2c
+# from --user/--group, the sudo caller (SUDO_USER), or an interactive prompt
+# — there is no built-in default. The daemon needs the i2c
 # group for /dev/i2c-7 (gpio not required — no interrupt line used). The gpio
 # group covers the sysfs/gpiochip nodes blinka's Jetson backend probes when it
 # imports board (99-gpio.rules, installed by install_kit.sh).
@@ -54,7 +55,7 @@ Restart=on-failure
 RestartSec=5
 # A refused calibration (EX_CONFIG) must fail once and stay failed —
 # restarting cannot fix a missing cal file, and a restart loop would spin
-# the I2C bus. Same pattern as visan.service RestartPreventExitStatus=78.
+# the I2C bus. RestartPreventExitStatus=78 keeps the unit failed.
 RestartPreventExitStatus=78
 TimeoutStopSec=10
 KillSignal=SIGINT

@@ -340,7 +340,7 @@ def _parse_args(p: argparse.ArgumentParser,
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bno055-kit",
-                                description="BNO055 kit recorder (VISAN companion)")
+                                description="BNO055 kit recorder")
     p.add_argument("--bus", type=int, default=None, help="I2C bus (default from config)")
     p.add_argument("--address", type=lambda x: int(x, 0), default=None,
                    help="I2C address, e.g. 0x29 (default from config)")

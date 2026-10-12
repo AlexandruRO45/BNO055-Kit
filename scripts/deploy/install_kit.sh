@@ -6,10 +6,10 @@
 # Like the deb postinst, it deliberately does NOT start the service
 # during install — the boot-time start is the tested path.
 #
-# The daemon runs as a dedicated service user. On a VISAN airframe that is the
-# 'visan' user the deb creates; on any other Jetson (different owner, no VISAN
-# deb) pass --user/--group to run it as someone else. The unit is templated
-# with the chosen user/group at install time.
+# The daemon runs as a dedicated service user/group. There is no built-in
+# default: pass --user/--group, or the installer auto-detects the sudo caller
+# (SUDO_USER); when neither is available it prompts you to type them. The
+# unit is templated with the chosen user/group at install time.
 #
 # Usage:
 #   install_kit.sh [--confirm] [--src DIR] [--no-enable]
@@ -18,8 +18,9 @@
 #   --confirm     actually apply changes (default is DRY-RUN)
 #   --src DIR     kit source tree (default: this script's ../..)
 #   --no-enable   install files but do not systemctl enable
-#   --user USER   service user to run the daemon as (default: visan)
-#   --group GROUP service group (default: same as --user)
+#   --user USER   service user (no default; taken from sudo/SUDO_USER when
+#                 omitted, prompted interactively when not auto-detectable)
+#   --group GROUP service group (default: same as the resolved --user)
 #
 # Exit codes: 0 success, 1 stage failure, 2 bad arguments.
 set -euo pipefail
@@ -27,11 +28,11 @@ set -euo pipefail
 SRC_DIR=""
 CONFIRM=0
 ENABLE=1
-SERVICE_USER="visan"
+SERVICE_USER=""
 SERVICE_GROUP=""
 DRY_PREFIX="[DRY-RUN] "
 
-usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,6 +47,19 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$SRC_DIR" ] || SRC_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+# No default user/group: an explicit --user wins; else auto-detect the sudo
+# caller (SUDO_USER); else prompt in real time. Group defaults to the user.
+if [ -z "$SERVICE_USER" ]; then
+    if [ -n "${SUDO_USER:-}" ]; then
+        SERVICE_USER="$SUDO_USER"
+        echo "[auto] service user/group taken from sudo: $SERVICE_USER"
+    else
+        printf 'service user (required, no default): '
+        read -r SERVICE_USER
+    fi
+fi
+[ -n "$SERVICE_USER" ] \
+    || { echo "[FAIL] no service user: pass --user or run under sudo" >&2; exit 2; }
 [ -n "$SERVICE_GROUP" ] || SERVICE_GROUP="$SERVICE_USER"
 
 APP_ROOT="/opt/bno055"
@@ -101,7 +115,7 @@ case "$PYVER" in
     *) fail preflight "python $PYVER outside supported range 3.10-3.12" ;;
 esac
 id -u "$SERVICE_USER" >/dev/null 2>&1 \
-    || fail preflight "user '$SERVICE_USER' not found — pass --user or create it first"
+    || fail preflight "user '$SERVICE_USER' not found — pass --user/--group or create it first"
 command -v rsync >/dev/null 2>&1 \
     || fail preflight "rsync not found — install it with: sudo apt-get install rsync"
 pass "preflight"
@@ -126,7 +140,7 @@ else
 fi
 run sudo -u "$SERVICE_USER" "${APP_ROOT}/.venv/bin/pip" install -e "${APP_ROOT}"
 # blinka's Jetson backend needs the Jetson.GPIO udev rules so the
-# non-root `visan` user can touch the GPIO sysfs/chip nodes it probes.
+# non-root service user can touch the GPIO sysfs/chip nodes it probes.
 # Best-effort: I2C itself only needs the i2c group (unit
 # SupplementaryGroups), so a missing rule file must not break install.
 GPIO_RULE="${APP_ROOT}/.venv/lib/python3.10/site-packages/Jetson/GPIO/99-gpio.rules"
@@ -146,7 +160,7 @@ stage "state + config"
 run install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" /var/lib/bno055 /var/log/bno055 /run/bno055
 # The factory fallback is the permanent known-good calibration shipped
 # with the Kit. It is (re)installed on EVERY install, owned root:root mode
-# 0444 — read-only for the `visan` user the daemon and the calibration
+# 0444 — read-only for the service user the daemon and the calibration
 # flow run as, so nothing but a root re-install can ever change or delete
 # it. It is what `start_kit.py fallback` restores active.json from when no
 # on-Kit session is good enough.
@@ -175,8 +189,8 @@ pass "state + config"
 # ---------------------------------------------------------------------- unit
 stage "systemd unit"
 run install -m 0755 "$WRAPPER_SRC" /opt/bno055/scripts/deploy/systemd/bno055_imu_wrapper.sh
-# Render the unit with the chosen service user/group (the shipped file defaults
-# to visan; a non-VISAN host overrides it via --user/--group).
+# Render the unit with the chosen service user/group (the shipped unit carries
+# @SERVICE_USER@/@SERVICE_GROUP@ placeholders; they are substituted here).
 UNIT_RENDERED="$(mktemp)"
 sed -e "s/^User=.*/User=${SERVICE_USER}/" \
     -e "s/^Group=.*/Group=${SERVICE_GROUP}/" "$UNIT_SRC" > "$UNIT_RENDERED"

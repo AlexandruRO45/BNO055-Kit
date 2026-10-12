@@ -24,7 +24,7 @@ DEFAULTS: dict[str, Any] = {
     "slew_threshold_s": 0.05,
     "log_level": "INFO",
     # Reconnect policy for transient I2C failures (mirrors the bounded
-    # reopen/backoff used by the VISAN CAN transport).
+    # reopen/backoff used by the flight-stack CAN transport).
     "max_reconnects": 10,
     "reconnect_backoff_s": 1.0,
     "reconnect_backoff_max_s": 30.0,
